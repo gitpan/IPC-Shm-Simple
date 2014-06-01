@@ -79,8 +79,6 @@ Share *_sharelite_shmat( key_t key, int shmid ) {
 	share->size_data  = share->head->shminfo->size_topseg
                           - ( sizeof( Header ) + sizeof( Descriptor ) );
 
-	sharelite_incref( share );
-
 	return share;
 }
 
@@ -140,7 +138,7 @@ Share *sharelite_create( key_t key, int segsize, int flags ) {
 
 
 /* DETACH / DESTROY SHARED SEGMENT FUNCTIONS */
-
+#include <stdio.h>
 /* ignores error conditions; this would be called by a destructor */
 int sharelite_shmdt( Share *share ) {
 
@@ -152,6 +150,10 @@ int sharelite_shmdt( Share *share ) {
 		_sharelite_shm_remove( share, NULL );
 		/* no END_EX_LOCK; we just removed the semaphore */
 	} else {
+		if ( share->lock & LOCK_EX )
+			REL_EX_LOCK(share);
+		if ( share->lock & LOCK_SH )
+			REL_SH_LOCK(share);
 		_sharelite_shm_forget( share, NULL );
 	}
 
