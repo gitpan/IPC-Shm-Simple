@@ -1,6 +1,7 @@
 package IPC::Shm::Simple;
-
+use warnings;
 use strict;
+use Carp;
 
 #
 # Copyright (C) 2005,2014 by Kevin Cody-Little <kcody@cpan.org>
@@ -15,35 +16,28 @@ use strict;
 
 =head1 NAME
 
-IPC::Shm::Simple - Simple Data in SysV Shared Memory Segments
+IPC::Shm::Simple - Simple data in SysV shared memory segments.
 
 =head1 SYNOPSIS
 
 Provides the ability to create a shared segment with or without first
-knowing what ipckey it will use. Optionally caches shared memory reads
-in process memory, and defeatably verifies writes by reading the value back
+knowing what ipckey it will use. Caches shared memory reads in process
+memory, and defeatably verifies writes by reading the value back
 and comparing it stringwise.
 
-=head1 TODO
+Can only store string or numeric data.
 
-=over
+=head1 OBJECT CACHING
 
-=item 1. Document _init interface and _fresh interface
-
-=item 2. Trap thread creation and wipe ObjCache/ObjOwner
-
-=item 3. Complete API documentation
-
-=item 4. Add portability documentation
-
-=item 5. Change valid to is_valid
-
-=back
+This module caches the underlying C object, such that the process only
+has one attachment to the shared segment. However, the Perl objects are
+not cached, to facilitate timely destruction. There can be many distinct
+blessed references to the same shared segment. This is made transparent
+by storing all state information in package lexicals, not upon the object.
 
 =cut
 
 
-use Carp;
 use Fcntl qw( :flock );
 use IPC::SysV qw( IPC_PRIVATE );
 
@@ -53,7 +47,7 @@ use UNIVERSAL;
 
 use vars qw( $VERSION @ISA %Attrib );
 
-$VERSION = '1.05';
+$VERSION = '1.06';
 @ISA     = qw( Class::Attrib DynaLoader );
 %Attrib  = (
 	Mode		=> 0660,
@@ -81,6 +75,8 @@ Returns blessed reference on success, undef on failure.
 
 Throws an exception on invalid parameters.
 
+The segment will be unlocked even if it was just created.
+
 =cut
 
 sub bind($$) {
@@ -95,7 +91,7 @@ sub bind($$) {
 	return $self;
 }
 
-{ # BEGIN ObjCache and ObjIndex lexical scope
+{ # BEGIN lexical scope
 my %ShmIndex = ();		# cache key=ipckey value=shmid
 my %ShmShare = ();		# cache key=shmid  value=sharelite
 my %ShmCount = ();		# cache key=shmid  value=integer
@@ -172,6 +168,17 @@ sub attach($$) {
 	return $self;
 }
 
+=head2 $self->ATTACH();
+
+Called by C< $this->attach() > and C< $this->shmat() > when an uncached
+attachment occurs.
+
+Must return true, otherwise the attachment is aborted.
+
+Does nothing on its own; this is meant for subclasses to override.
+
+=cut
+
 sub ATTACH($) {
 	my ( $self ) = @_;
 
@@ -188,6 +195,8 @@ The optional parameters segsize and permissions default to C<< $this->Size() >>
 and C<< $this->Mode() >>, respectively.
 
 Returns blessed reference on success, undef on failure.
+
+The segment will automatically have a writelock in effect.
 
 =cut
 
@@ -294,15 +303,6 @@ sub remove($) {
 	$share  = $self->{share}
 		or return undef; # FIXME: squawk?
 
-#	$shmid  = $self->{shmid} || sharelite_shmid( $share );
-#	$ipckey = sharelite_key( $share );
-
-#	$self->scache_clean;
-
-#	delete $ShmCount{$shmid};
-#	delete $ShmShare{$shmid};
-#	delete $ShmIndex{$ipckey};
-
 	return ( sharelite_remove( $share ) == -1 ) ? undef : 1;
 }
 
@@ -323,6 +323,18 @@ sub DESTROY($) {
 	return;
 }
 
+=head1 DESTRUCTOR
+
+=head2 $self->DETACH();
+
+Called by C< $self->DESTROY() > on the last copy of the object.
+
+Uncaches the referenced instance, and causes the underlying shared
+memory segments to be detached by the operating system.
+
+If subclasees override this, they must call C< $self->SUPER::DESTROY() >.
+
+=cut
 sub DETACH {
 	my ( $self ) = @_;
 
@@ -345,7 +357,7 @@ sub DETACH {
 	return;
 }
 
-} # END scope
+} # END lexical scope
 
 
 =head1 ACCESSOR METHODS
@@ -382,6 +394,10 @@ Returns the size of data chunk segments, in bytes.
 
 Changes the size of chunk data segments. The share must have only one
 allocated segment (the top segment) for this call to succeed.
+
+=head2 $self->nconns();
+
+Reports the number of processes connected to the share.
 
 =head2 $self->nrefs();
 
@@ -433,8 +449,12 @@ sub chunk_seg_size($;$) {
 	return sharelite_chunk_seg_size( shift->{share}, @_ );
 }
 
-sub nrefs($;$) {
-	return sharelite_nrefs( shift->{share}, @_ );
+sub nconns($) {
+	return sharelite_nconns( shift->{share} );
+}
+
+sub nrefs($) {
+	return sharelite_nrefs( shift->{share} );
 }
 
 sub incref($;$) {
@@ -460,9 +480,13 @@ Entirely removes the cache entry for the object.
 
 =head2 $self->fetch();
 
-Fetch a previously stored value. If a subclass defines a C<_fresh> method,
-it will be called only when the shared memory value is changed by another
-process. If nothing has been stored yet, C<undef> is returned.
+Fetch a previously stored value.
+
+If nothing has been stored yet, C<''> (the empty string) is returned.
+
+=head2 $self->FRESH();
+
+Invoked by C< fetch() > when the data has been changed by another process.
 
 =cut
 
@@ -476,9 +500,10 @@ my %ShmCache = ();		# cache key=shmid  value={}
 sub scache($) {
 	my $self = shift;
 
-	my $shmid = $self->shmid;
+	my $shmid = $self->{shmid}; # FIXME or squawk
 
 	my $cache = $ShmCache{$shmid} ||= {};
+
 	$cache->{scache} ||= '';
 
 	return \($cache->{scache});

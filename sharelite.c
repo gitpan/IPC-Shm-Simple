@@ -500,6 +500,13 @@ int sharelite_chunk_seg_size( Share *share, int segsize ) {
 	return share->head->shminfo->size_chunkseg;
 }
 
+int sharelite_nconns( Share *share ) {
+
+	CALL_NEEDS_SHARE_AND_HEAD(-1);
+
+	return _sharelite_shm_nconns( share );
+}
+
 int sharelite_nrefs( Share *share ) {
 
 	CALL_NEEDS_SHARE_AND_HEAD(-1);
